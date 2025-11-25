@@ -47,12 +47,12 @@ from transformers import (
 from sklearn.metrics import f1_score, accuracy_score
 
 label_cols = [
-    "vilification",
-    "extreme_language",
     "stereotype",
-    "invalidation",
-    "lack_of_empathy",
+    "vilification",
     "dehumanization",
+    "extreme_language",
+    "lack_of_empathy",
+    "invalidation",
 ]
 NUM_LABELS = len(label_cols)
 
@@ -293,9 +293,31 @@ for j, col in enumerate(label_cols):
 
 submission.head()
 
-"""Saving df to .csv"""
+"""Saving the .df partitioned by language into CSVs"""
 
-out_path = base_dir + "submissions/subtask3_ensemble.csv"
-os.makedirs(os.path.dirname(out_path), exist_ok=True)
-submission.to_csv(out_path, index=False)
-print("Saved submission to:", out_path)
+import os
+
+# Make sure this exists
+out_root = os.path.join(base_dir, "submissions")
+os.makedirs(out_root, exist_ok=True)
+
+# Map from the first 2 characters of id → desired lang code
+prefix_to_lang = {
+    "en": "eng",
+    "sp": "spa",
+    "de": "deu",
+    "ar": "arb",
+    "zh": "zho",
+}
+
+# Add a prefix column based on the first 2 letters of id
+submission["prefix"] = submission["id"].astype(str).str[:2]
+
+for prefix, lang_code in prefix_to_lang.items():
+    df_lang = submission[submission["prefix"] == prefix].copy()
+    # Drop the helper column before saving
+    df_lang = df_lang.drop(columns=["prefix"])
+
+    out_path = os.path.join(out_root, f"pred_{lang_code}.csv")
+    df_lang.to_csv(out_path, index=False)
+    print(f"Saved {len(df_lang)} rows to {out_path}")
