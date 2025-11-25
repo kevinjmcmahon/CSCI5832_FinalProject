@@ -47,13 +47,14 @@ from transformers import (
 from sklearn.metrics import f1_score, accuracy_score
 
 label_cols = [
-    "stereotype",
     "vilification",
-    "dehumanization",
     "extreme_language",
-    "lack_of_empathy",
+    "stereotype",
     "invalidation",
+    "lack_of_empathy",
+    "dehumanization",
 ]
+
 NUM_LABELS = len(label_cols)
 
 """### Loading all data properly"""
@@ -290,6 +291,21 @@ submission = pd.DataFrame({
 
 for j, col in enumerate(label_cols):
     submission[col] = preds_test[:, j]
+
+# UPDATING COLUMN NAMES TO ACTUAL NAMES
+# HAD COLUMNS MIS-LABELED THROUGHOUT ENTIRE TRAINING PROCESS
+# Stuck to the bad naming convention throughout and
+# finally switching back for submission
+submission = submission.rename(
+    columns={
+        "vilification": "stereotype",
+        "extreme_language": "vilification",
+        "stereotype": "dehumanization",
+        "invalidation": "lack_of_empathy",
+        "lack_of_empathy": "extreme_language",
+        "dehumanization": "invalidation",
+    }
+)
 
 submission.head()
 
