@@ -12,7 +12,7 @@ Original file is located at
 
 **Hyper-parameter tune: "microsoft/mdeberta-v3-base"**
 
-By: Kevin Mcmahon, Caleb Kumar
+By: Kevin McMahon, Caleb Kumar
 
 Mount Google Drive to allow access to files stored in the user's Drive. This command will prompt the user for authorization.
 """
