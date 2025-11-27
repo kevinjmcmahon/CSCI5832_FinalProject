@@ -323,7 +323,7 @@ prefix_to_lang = {
     "sp": "spa",
     "de": "deu",
     "ar": "arb",
-    "zh": "zho",
+    "zh": "zo",
 }
 
 # Add a prefix column based on the first 2 letters of id
