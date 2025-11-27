@@ -35,7 +35,7 @@ LANG_PREFIXES = {
         "Meiner Meinung nach, ",
         "Ganz ehrlich, ",
     ],
-    "arb": [
+    "ara": [
         "بصراحة، ",
         "في رأيي، ",
         "بصراحة يعني، ",
@@ -47,7 +47,7 @@ LANG_SUFFIXES = {
     "spa": [" jaja", " la verdad", " en serio", " de verdad"],
     "zho": [" 哈哈", " 真的", " 啊", " 呢"],
     "deu": [" lol", " ehrlich", " wirklich", " halt"],
-    "arb": [" بصراحة", " والله", " صراحة", " جدًّا"],
+    "ara": [" بصراحة", " والله", " صراحة", " جدًّا"],
 }
 
 
@@ -133,18 +133,24 @@ def augment_df(df: pd.DataFrame, lang: str, target_size: int) -> pd.DataFrame:
     text transformations.
 
     Args:
-        df: DataFrame with columns ['id', 'text', 'polarization']
+        df: DataFrame with columns ['id', 'text', 'polarization'] (and optionally 'language')
         lang: language code: 'eng', 'spa', 'zho', 'deu', 'ara'
         target_size: desired number of rows after augmentation
 
     Returns:
-        New DataFrame with up to target_size rows.
+        New DataFrame with up to target_size rows, including a 'language' column.
     """
     df = df.copy()
-    orig_n = len(df)
 
+    # Ensure the original data has the language column
+    if "language" not in df.columns:
+        df["language"] = lang
+    else:
+        # Optional sanity check: if there is a language column, keep it consistent
+        df["language"] = df["language"].fillna(lang)
+
+    orig_n = len(df)
     if orig_n >= target_size:
-        # Already big enough; just return original
         return df
 
     needed_extra = target_size - orig_n
@@ -170,12 +176,13 @@ def augment_df(df: pd.DataFrame, lang: str, target_size: int) -> pd.DataFrame:
                     "id": new_id,
                     "text": new_text,
                     "polarization": label,
+                    "language": lang,
                 }
             )
 
         if len(aug_rows) >= needed_extra:
             break
 
-    aug_df = pd.DataFrame(aug_rows, columns=df.columns)
+    aug_df = pd.DataFrame(aug_rows, columns=["id", "text", "polarization", "language"])
     full_df = pd.concat([df, aug_df], ignore_index=True)
     return full_df
