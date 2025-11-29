@@ -96,10 +96,10 @@ python src/evaluate.py --model_path models/[model_name] --test_data_path data/te
 
 ## **Repository Structure**
 
-*   data
-*   models
-*   notebooks
-*   src
+*   subtask1
+*   subtask2
+*   subtask3
+*   submissions
 *   .gitignore
 *   LICENSE
 *   README.md
