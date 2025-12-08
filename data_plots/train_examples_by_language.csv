@@ -1,6 +1,13 @@
-0
-"{'language': 'eng', 'total_examples': 8028}"
-"{'language': 'arb', 'total_examples': 10140}"
-"{'language': 'spa', 'total_examples': 9915}"
-"{'language': 'deu', 'total_examples': 9540}"
-"{'language': 'zho', 'total_examples': 12840}"
+language,total_examples
+amh,9996
+arb,10140
+deu,9540
+eng,8028
+fas,9885
+hau,10953
+hin,8232
+nep,6015
+spa,9915
+tur,7092
+urd,8547
+zho,12840

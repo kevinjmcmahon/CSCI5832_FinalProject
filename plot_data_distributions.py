@@ -67,10 +67,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--languages",
         nargs="+",
-        default=LANG_CODES,
-        help="Language codes to include (e.g., eng arb spa deu zho).",
+        default=None,
+        help="Language codes to include (e.g., eng arb spa deu zho). Defaults to "
+        "all languages with data in every subtask when omitted.",
     )
     return parser.parse_args()
+
+
+def discover_languages(data_root: Path) -> List[str]:
+    """Return languages that have train data for every subtask."""
+    lang_sets = []
+    for subtask in SUBTASK_CONFIG:
+        train_dir = data_root / subtask / "train"
+        langs = {p.stem for p in train_dir.glob("*.csv")}
+        if langs:
+            lang_sets.append(langs)
+    if not lang_sets:
+        raise FileNotFoundError("No training data found to detect languages.")
+    intersection = set.intersection(*lang_sets)
+    if intersection:
+        return sorted(intersection)
+    # Fall back to the union if the intersection is empty.
+    union_langs = sorted(set.union(*lang_sets))
+    print(
+        "Warning: Not all subtask directories share the same languages. "
+        "Using the union of available languages."
+    )
+    return union_langs
 
 
 def load_frames_by_language(
@@ -198,8 +221,7 @@ def plot_example_totals(
         for lang in languages
     }
     totals_df = pd.DataFrame(
-        [{"language": lang, "total_examples": totals_by_language[lang]}]
-        for lang in languages
+        [{"language": lang, "total_examples": totals_by_language[lang]} for lang in languages]
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     table_path = output_dir / "train_examples_by_language.csv"
@@ -212,21 +234,48 @@ def plot_example_totals(
     return output_path
 
 
+def save_subtask2_language_table(
+    frames: Dict[str, pd.DataFrame], output_dir: Path
+) -> Path:
+    """Write a table of subtask2 class counts per language."""
+    label_cols = SUBTASK_CONFIG["subtask2"]["label_cols"]
+    rows = []
+    for lang, df in sorted(frames.items()):
+        row = {"language": lang, "total_examples": len(df)}
+        for col in label_cols:
+            row[col] = int(df[col].astype(int).sum())
+        rows.append(row)
+    if not rows:
+        raise ValueError("No subtask2 frames provided to save_subtask2_language_table.")
+
+    table = pd.DataFrame(rows)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "subtask2_language_class_counts.csv"
+    table.to_csv(path, index=False)
+    print(f"subtask2: saved counts table to {path}")
+    return path
+
+
 def main() -> None:
     args = parse_args()
+    languages = (
+        discover_languages(args.data_root) if args.languages is None else args.languages
+    )
     frames_by_subtask: Dict[str, Dict[str, pd.DataFrame]] = {}
     for subtask in SUBTASK_CONFIG:
-        frames = load_frames_by_language(args.data_root, subtask, args.languages)
+        frames = load_frames_by_language(args.data_root, subtask, languages)
         frames_by_subtask[subtask] = frames
         per_lang_counts = count_labels_by_language(subtask, frames)
         label_order = SUBTASK_CONFIG[subtask]["label_cols"]
         if subtask == "subtask1":
             label_order = ["no", "yes"]
         output_path = plot_counts(
-            subtask, per_lang_counts, label_order, args.languages, args.output_dir
+            subtask, per_lang_counts, label_order, languages, args.output_dir
         )
         print(f"{subtask}: saved figure to {output_path}")
-    total_path = plot_example_totals(frames_by_subtask, args.languages, args.output_dir)
+        if subtask == "subtask2":
+            save_subtask2_language_table(frames, args.output_dir)
+    total_path = plot_example_totals(frames_by_subtask, languages, args.output_dir)
     print(f"Totals: saved figure to {total_path}")
 
 
