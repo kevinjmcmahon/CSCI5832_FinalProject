@@ -8,15 +8,15 @@ Original file is located at
 
 # SemEval Task 9 POLAR
 
-### Subtask 1 - Making predictions
+### Subtask 1 - Making predictions & confusion matrices
 
-**Hyper-parameter tune - "xlm-roberta-large"**
+Evaluating various trained **"xlm-roberta-large"** model's that differ by the data they were trained on.
 
 - Subtask 1.1: Standard training on subtask 1 data xlm-roberta-large
-- Subtask 1.2: Training on suntehtic data created using script to add more data w/ noise (10,000 training examples per language)
-- Subtask 1.3: Training w/ langauge tokens pre-pended to text
+- Subtask 1.2: Training w/ langauge tokens pre-pended to text
+- Subtask 1.3: Training on syntehtic data created using script to add more data w/ noise (10,000 training examples per language)
 
-By: Kevin Mcmahon, Caleb Kumar
+By: Kevin McMahon, Caleb Kumar
 
 Mount Google Drive to allow access to files stored in the user's Drive. This command will prompt the user for authorization.
 """
@@ -33,7 +33,7 @@ drive.mount('/content/drive')
 import pandas as pd
 import os
 
-from sklearn.metrics import recall_score, precision_score, f1_score
+from sklearn.metrics import recall_score, precision_score, f1_score, accuracy_score
 import numpy as np
 import random
 import math
@@ -61,27 +61,45 @@ from optuna.samplers import TPESampler
 
 import gc
 
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+
 """### Importing / Formatting Data + Model Location Def"""
 
 import os
 import pandas as pd
 
-model_dirs = {
-    "xlmr1_1": base_dir + "models/subtask1_xlmr",
-    "xlmr1_2": base_dir + "models/subtask1_xlmr_langLabels",
-    "xlmr1_3": base_dir + "models/subtask1_xlmr_jumbo/checkpoint-9375",
-}
-
 base_dir = "/content/drive/MyDrive/SemEval2026/"
 data_dir = os.path.join(base_dir, "data/subtask1")
+
+# These should match how you trained/saved
+model_dirs = {
+    "xlmr1_1": os.path.join(base_dir, "models/subtask1_xlmr"),
+    "xlmr1_2": os.path.join(base_dir, "models/subtask1_xlmr_langLabels"),
+    "xlmr1_3": os.path.join(base_dir, "models/subtask1_xlmr_jumbo/checkpoint-9375"),
+}
+
 languages = ["eng", "arb", "deu", "spa", "zho"]
 
-# Load dev data exactly like training (no [lang] tags)
+# ---- Load TRAIN data (all languages) ----
+train_dfs = []
+for lang in languages:
+    df_train = pd.read_csv(os.path.join(data_dir, "train", f"{lang}.csv"))
+    df_train["language"] = lang
+    train_dfs.append(df_train)
+
+train_full = pd.concat(train_dfs, ignore_index=True)
+texts_train = train_full["text"].tolist()
+y_train = train_full["polarization"].values.astype(int)  # binary labels 0/1
+
+print(len(train_full), "train examples")
+
+# ---- Load DEV data (what you already had) ----
 dev_dfs = []
 for lang in languages:
-    df = pd.read_csv(os.path.join(data_dir, "dev", f"{lang}.csv"))
-    df["language"] = lang
-    dev_dfs.append(df)
+    df_dev = pd.read_csv(os.path.join(data_dir, "dev", f"{lang}.csv"))
+    df_dev["language"] = lang
+    dev_dfs.append(df_dev)
 
 dev_full = pd.concat(dev_dfs, ignore_index=True)
 
@@ -155,6 +173,52 @@ def predict_logits(model_dir, texts, batch_size=32, max_length=128):
     logits = np.concatenate(all_logits, axis=0)
     print("Logits shape:", logits.shape)
     return logits
+
+"""### Helper to plot & save confusion matrices"""
+
+import numpy as np
+
+def plot_confusion_matrix(cm, classes, title, normalize=False, cmap=plt.cm.Blues):
+    """
+    cm: confusion matrix
+    classes: list of class labels (e.g., [0, 1])
+    title: string for the plot title
+    normalize: whether to normalize rows
+    """
+    if normalize:
+        cm = cm.astype("float") / cm.sum(axis=1, keepdims=True)
+
+    fig, ax = plt.subplots(figsize=(4, 4))
+    im = ax.imshow(cm, interpolation="nearest", cmap=cmap)
+    ax.figure.colorbar(im, ax=ax)
+
+    ax.set(
+        xticks=np.arange(cm.shape[1]),
+        yticks=np.arange(cm.shape[0]),
+        xticklabels=classes,
+        yticklabels=classes,
+        ylabel="True label",
+        xlabel="Predicted label",
+    )
+
+    # 🔥 Bold title here
+    ax.set_title(title, fontweight="bold")
+
+    fmt = ".2f" if normalize else "d"
+    thresh = cm.max() / 2.0
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            ax.text(
+                j,
+                i,
+                format(cm[i, j], fmt),
+                ha="center",
+                va="center",
+                color="white" if cm[i, j] > thresh else "black",
+            )
+
+    fig.tight_layout()
+    return fig
 
 """### Defining Evaluation Metric"""
 
@@ -234,3 +298,59 @@ for name, mdir in model_dirs.items():
         out_path = os.path.join(out_root, f"pred_{lang}.csv")
         df_lang.to_csv(out_path, index=False)
         print(f"Saved {len(df_lang)} rows to {out_path}")
+
+"""### Compute & save confusion matrices"""
+
+# Directory to save confusion matrix figures
+cm_dir = os.path.join(base_dir, "figures_subtask1_confusion")
+os.makedirs(cm_dir, exist_ok=True)
+
+class_labels = [0, 1]  # binary polarization
+
+for name, mdir in model_dirs.items():
+    print(f"\n=== {name}: train confusion matrix ===")
+
+    # 1) Get logits on the TRAIN set
+    train_logits = predict_logits(
+        model_dir=mdir,
+        texts=texts_train,
+        batch_size=32,
+        max_length=128,
+    )
+
+    if(name=="xlmr1_1"):
+      figTitle = "Standard training"
+    elif(name=="xlmr1_2"):
+      figTitle = "Prepended lang labels"
+    elif(name=="xlmr1_3"):
+      figTitle = "Jumbo training"
+    else:
+      figTitle = "Unknown"
+
+    # 2) Convert logits to predicted labels (your binary logic)
+    train_preds = logits_to_preds(train_logits, threshold=0.5)
+
+    # 3) Confusion matrix
+    cm = confusion_matrix(y_train, train_preds, labels=class_labels)
+    print("Confusion matrix (raw counts):\n", cm)
+
+    # 3b) Metrics on train
+    f1_macro = f1_score(y_train, train_preds, average="macro", zero_division=0)
+    acc = accuracy_score(y_train, train_preds)
+    print(f"Train macro-F1: {f1_macro:.4f}, accuracy: {acc:.4f}")
+
+    # 4) Plot and save figure
+    fig = plot_confusion_matrix(
+        cm,
+        classes=class_labels,
+        title=f"{figTitle}",
+        normalize=True,
+    )
+
+    # 5) Save figure with your preferred name
+    fig_filename = f"st1_train_confusion_{name}.png"
+    fig_path = os.path.join(cm_dir, fig_filename)
+    fig.savefig(fig_path, dpi=150)
+    plt.close(fig)
+
+    print("Saved confusion matrix figure to:", fig_path)
