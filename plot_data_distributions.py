@@ -16,13 +16,24 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 import matplotlib.pyplot as plt
 import pandas as pd
 
+plt.rcParams.update(
+    {
+        "axes.titlesize": 26,   # main axes titles
+        "axes.labelsize": 20,   # x/y axis labels
+        "xtick.labelsize": 16,  # x tick labels
+        "ytick.labelsize": 16,  # y tick labels
+    }
+)
 
 LANG_CODES = ["eng", "arb", "spa", "deu", "zho"]
+# Set to a list (e.g., ["eng", "spa"]) to fix the language subset without CLI args.
+# Set to None to auto-discover languages or supply --languages on the command line.
+DEFAULT_LANG_FILTER: Optional[List[str]] = LANG_CODES
 
 SUBTASK_CONFIG: Dict[str, Dict[str, List[str]]] = {
     "subtask1": {"label_cols": ["polarization"]},
@@ -69,7 +80,7 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         default=None,
         help="Language codes to include (e.g., eng arb spa deu zho). Defaults to "
-        "all languages with data in every subtask when omitted.",
+        "DEFAULT_LANG_FILTER if set, otherwise all languages with data in every subtask.",
     )
     return parser.parse_args()
 
@@ -157,7 +168,7 @@ def plot_counts(
             f"{total}",
             ha="center",
             va="bottom",
-            fontsize=10,
+            fontsize=12,
             weight="bold",
         )
 
@@ -201,7 +212,7 @@ def plot_example_totals(
         ]
         max_val = max(max_val, max(vals) if vals else 0)
         bars = ax.bar(offsets, vals, width=width, label=lang)
-        ax.bar_label(bars, padding=3, fontsize=9)
+        ax.bar_label(bars, padding=3, fontsize=12)
 
     ax.set_xticks(x_positions)
     ax.set_xticklabels(subtask_names, rotation=0, ha="center")
@@ -256,10 +267,36 @@ def save_subtask2_language_table(
     return path
 
 
+def save_subtask3_language_table(
+    frames: Dict[str, pd.DataFrame], output_dir: Path
+) -> Path:
+    """Write a table of subtask3 class counts per language."""
+    label_cols = SUBTASK_CONFIG["subtask3"]["label_cols"]
+    rows = []
+    for lang, df in sorted(frames.items()):
+        row = {"language": lang, "total_examples": len(df)}
+        for col in label_cols:
+            row[col] = int(df[col].astype(int).sum())
+        rows.append(row)
+    if not rows:
+        raise ValueError("No subtask3 frames provided to save_subtask3_language_table.")
+
+    table = pd.DataFrame(rows)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "subtask3_language_class_counts.csv"
+    table.to_csv(path, index=False)
+    print(f"subtask3: saved counts table to {path}")
+    return path
+
+
 def main() -> None:
     args = parse_args()
     languages = (
-        discover_languages(args.data_root) if args.languages is None else args.languages
+        args.languages
+        if args.languages is not None
+        else DEFAULT_LANG_FILTER
+        if DEFAULT_LANG_FILTER is not None
+        else discover_languages(args.data_root)
     )
     frames_by_subtask: Dict[str, Dict[str, pd.DataFrame]] = {}
     for subtask in SUBTASK_CONFIG:
@@ -275,6 +312,8 @@ def main() -> None:
         print(f"{subtask}: saved figure to {output_path}")
         if subtask == "subtask2":
             save_subtask2_language_table(frames, args.output_dir)
+        if subtask == "subtask3":
+            save_subtask3_language_table(frames, args.output_dir)
     total_path = plot_example_totals(frames_by_subtask, languages, args.output_dir)
     print(f"Totals: saved figure to {total_path}")
 
