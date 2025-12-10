@@ -8,13 +8,14 @@ Original file is located at
 
 # Ensemble Model for Subtask 3
 
-In this notebook we will be wiring together the best performing models from hyper-parameter tuning together to hopefully improve F1 Score.
+Loads all models to create ensemble and tunes thresholds. Creates confusion matrices.
 
 ### Final Predictions for Submission will be created in this notebook
 
 ### Mount Drive + Set Base Directory Paths
 """
 
+import os
 from google.colab import drive
 drive.mount('/content/drive')
 
@@ -22,29 +23,50 @@ base_dir = '/content/drive/MyDrive/SemEval2026/'
 data_dir = base_dir + 'data/subtask3/'
 
 model_dirs = {
-    "xlmr": base_dir + "models/subtask3_xlmr_large",
-    "twitter": base_dir + "models/subtask3_twitter_xlm_base",
-    "mdeberta": base_dir + "models/subtask3_mdeberta_v3_base",
+    "xlmr": os.path.join(base_dir, "models/subtask3_xlmr_large"),
+    "twitter": os.path.join(base_dir, "models/subtask3_twitter_xlm_base"),
+    "mdeberta": os.path.join(base_dir, "models/subtask3_mdeberta_v3_base"),
 }
 
 """### Imports + label setup"""
 
-import os
-import numpy as np
+!pip install optuna
+!pip install -U transformers
+!pip install sacremoses
+
 import pandas as pd
+import os
+
+from sklearn.metrics import recall_score, precision_score, f1_score, accuracy_score
+import numpy as np
+import random
+import math
 
 import torch
-from torch.utils.data import Dataset
+
+from sklearn.metrics import f1_score
 
 from transformers import (
     AutoTokenizer,
+    AutoConfig,
     AutoModelForSequenceClassification,
-    TrainingArguments,
     Trainer,
+    TrainingArguments,
     DataCollatorWithPadding,
+    EarlyStoppingCallback,
+    set_seed
 )
+from torch.utils.data import Dataset
+import wandb
+from transformers import AutoConfig, AutoModelForSequenceClassification
 
-from sklearn.metrics import f1_score, accuracy_score
+import optuna
+from optuna.samplers import TPESampler
+
+import gc
+
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
 
 label_cols = [
     "vilification",
@@ -73,6 +95,8 @@ for lang in languages:
     dev_dfs[lang]["language"] = lang
 
 train_full = pd.concat([train_dfs[lang] for lang in languages], ignore_index=True)
+texts_train = train_full["text"].tolist()
+y_train = train_full[label_cols].values.astype(int)
 dev_full = pd.concat([dev_dfs[lang] for lang in languages], ignore_index=True)
 
 train, validation = train_test_split(
@@ -81,6 +105,63 @@ train, validation = train_test_split(
     random_state=42,
     stratify=train_full["language"]
 )
+
+print("Train size:", len(train_full))
+print("y_train shape:", y_train.shape)
+
+"""### Helper for metrics + confusion matrices (multi-label)"""
+
+import numpy as np
+from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
+
+def sigmoid_np(x):
+    return 1.0 / (1.0 + np.exp(-x))
+
+def compute_multilabel_metrics_from_logits(logits, y_true, threshold=0.3):
+    """
+    logits: (N, L)
+    y_true: (N, L) in {0,1}
+    """
+    probs = sigmoid_np(logits)
+    preds = (probs >= threshold).astype(int)
+
+    macro_f1 = f1_score(y_true, preds, average="macro", zero_division=0)
+    acc = accuracy_score(y_true, preds)  # subset accuracy
+    return macro_f1, acc, preds
+
+def collapse_multilabel_to_multiclass(y_true_multi, logits, threshold_for_none=0.3):
+    """
+    y_true_multi: (N, L) multi-label 0/1
+    logits:       (N, L) raw logits
+    Returns:
+      y_true_mc: (N,) int in [0..L]   (0 = none, 1..L = label index+1)
+      y_pred_mc: (N,) int in [0..L]
+    """
+    N, L = y_true_multi.shape
+    probs = sigmoid_np(logits)
+
+    # True labels: 0 = none, else index of first positive label + 1
+    y_true_mc = np.zeros(N, dtype=int)
+    for i in range(N):
+        row = y_true_multi[i]
+        pos = np.where(row == 1)[0]
+        if len(pos) == 0:
+            y_true_mc[i] = 0  # none
+        else:
+            # pick the first positive label; you can change this tie-breaker if you want
+            y_true_mc[i] = 1 + int(pos[0])
+
+    # Pred labels: 0 = none if max prob < threshold_for_none; else argmax+1
+    y_pred_mc = np.zeros(N, dtype=int)
+    for i in range(N):
+        row_probs = probs[i]
+        j_max = int(np.argmax(row_probs))
+        if row_probs[j_max] < threshold_for_none:
+            y_pred_mc[i] = 0  # predict none
+        else:
+            y_pred_mc[i] = 1 + j_max
+
+    return y_true_mc, y_pred_mc
 
 """### Defining Dataset Class (the same as before)"""
 
@@ -162,6 +243,113 @@ def get_logits_for_model(model_dir, texts, labels=None, max_len=128, batch_size=
 
     return logits
 
+"""### Confusion Matrix Helper"""
+
+def plot_confusion_matrix(cm, classes, title, normalize=True, cmap=plt.cm.Blues):
+    """
+    cm: confusion matrix
+    classes: list of class labels for axes
+    """
+    if normalize:
+        cm = cm.astype("float") / cm.sum(axis=1, keepdims=True)
+
+    fig, ax = plt.subplots(figsize=(5, 5))  # a bit bigger for 6x6
+    im = ax.imshow(cm, interpolation="nearest", cmap=cmap)
+    ax.figure.colorbar(im, ax=ax)
+
+    ax.set(
+        xticks=np.arange(cm.shape[1]),
+        yticks=np.arange(cm.shape[0]),
+        xticklabels=classes,
+        yticklabels=classes,
+        ylabel="True label",
+        xlabel="Predicted label",
+    )
+    ax.set_title(title, fontweight="bold")
+    ax.tick_params(axis="x", labelrotation=90)
+
+    fmt = ".2f" if normalize else "d"
+    thresh = cm.max() / 2.0
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            ax.text(
+                j,
+                i,
+                format(cm[i, j], fmt),
+                ha="center",
+                va="center",
+                color="white" if cm[i, j] > thresh else "black",
+            )
+
+    fig.tight_layout()
+    return fig
+
+"""###Per-model train metrics + confusion matrices"""
+
+# Directory to save confusion matrix figures for subtask 3
+cm_dir = os.path.join(base_dir, "figures_subtask3_confusion")
+os.makedirs(cm_dir, exist_ok=True)
+
+num_harm = len(label_cols)     # should be 5 if you want 6x6 (5 classes + none)
+num_classes = num_harm + 1     # 0 = none, 1..num_harm = harm classes
+class_ids = list(range(num_classes))
+class_names = ["none"] + label_cols  # axis labels for the 6x6
+
+train_logits_models = {}
+
+for name, mdir in model_dirs.items():
+    print(f"\n=== {name}: TRAIN performance ===")
+
+    # 1) Get logits on TRAIN
+    logits_train = get_logits_for_model(
+        model_dir=mdir,
+        texts=texts_train,
+        labels=y_train,
+        max_len=128,
+        batch_size=32,
+    )
+    train_logits_models[name] = logits_train
+
+    # 2) Multi-label metrics (same as before, on 0/1 matrix)
+    f1_macro_ml, acc_ml, preds_train = compute_multilabel_metrics_from_logits(
+        logits_train,
+        y_train,
+        threshold=0.3,
+    )
+    print(f"Multi-label TRAIN macro-F1: {f1_macro_ml:.4f}, subset accuracy: {acc_ml:.4f}")
+
+    # 3) Collapse to multiclass and compute 6x6 confusion matrix
+    y_true_mc, y_pred_mc = collapse_multilabel_to_multiclass(
+        y_true_multi=y_train,
+        logits=logits_train,
+        threshold_for_none=0.3,
+    )
+
+    f1_macro_mc = f1_score(y_true_mc, y_pred_mc, average="macro", zero_division=0)
+    acc_mc = accuracy_score(y_true_mc, y_pred_mc)
+    print(f"Multiclass TRAIN macro-F1: {f1_macro_mc:.4f}, accuracy: {acc_mc:.4f}")
+
+    cm = confusion_matrix(
+        y_true_mc,
+        y_pred_mc,
+        labels=class_ids,  # [0..5]
+    )
+    print("6x6 confusion matrix:\n", cm)
+
+    fig = plot_confusion_matrix(
+        cm,
+        classes=class_names,  # ["none", class1, ..., class5]
+        title=f"{name}",
+        normalize=True,
+    )
+
+    fig_filename = f"st3_train_confusion_multiclass_{name}.png"
+    fig_path = os.path.join(cm_dir, fig_filename)
+    fig.savefig(fig_path, dpi=150)
+    plt.close(fig)
+
+    print("  Saved figure:", fig_path)
+
 """### Compute dev logits for each model"""
 
 valid_logits = {}
@@ -214,39 +402,98 @@ This provides us with;
 
 """
 
-# Simple equal-weight ensemble on logits
-logits_x = valid_logits["xlmr"]
-logits_t = valid_logits["twitter"]
-logits_m = valid_logits["mdeberta"]
+# === Ensemble on TRAIN ===
+import numpy as np
+import os
+from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
 
-logits_ens = (logits_x + logits_t + logits_m) / 3.0
-probs_ens = 1.0 / (1.0 + np.exp(-logits_ens))  # sigmoid
+print("\n=== Ensemble (TRAIN) performance ===")
 
-num_labels = NUM_LABELS
-best_thresh = [0.5] * num_labels
+# --- Ensemble logits on TRAIN ---
+# Make sure these keys match your model_dirs keys
+logits_x_train = train_logits_models["xlmr"]
+logits_t_train = train_logits_models["twitter"]
+logits_m_train = train_logits_models["mdeberta"]
 
-for j in range(num_labels):
-    best_f1_j = 0.0
-    best_t_j = 0.5
-    for t in np.linspace(0.1, 0.9, 81):  # 0.01 steps
-        preds_j = (probs_ens[:, j] >= t).astype(int)
-        f1_j = f1_score(y_true[:, j], preds_j, zero_division=0)
-        if f1_j > best_f1_j:
-            best_f1_j = f1_j
-            best_t_j = t
-    best_thresh[j] = best_t_j
-    print(f"Label {label_cols[j]}: best_thresh={best_t_j:.2f}, best_f1={best_f1_j:.3f}")
+# Equal-weight ensemble on logits
+logits_ens_train = (logits_x_train + logits_t_train + logits_m_train) / 3.0
+probs_ens_train = sigmoid_np(logits_ens_train)
 
-# Evaluate ensemble macro-F1 with these thresholds
-preds_all = np.zeros_like(y_true)
-for j in range(num_labels):
-    preds_all[:, j] = (probs_ens[:, j] >= best_thresh[j]).astype(int)
+# --- Determine thresholds (per-label or global) for MULTI-LABEL metrics ---
+try:
+    # If best_thresh is array/list, use per-label thresholds
+    if isinstance(best_thresh, (list, np.ndarray)):
+        effective_thresholds = np.array(best_thresh)
+        if len(effective_thresholds) != len(label_cols):
+            print(
+                f"Warning: best_thresh has {len(effective_thresholds)} elements, "
+                f"but {len(label_cols)} were expected. Falling back to global threshold 0.3."
+            )
+            effective_thresholds = np.full(len(label_cols), 0.3)
+    elif isinstance(best_thresh, (float, int)):
+        # Single scalar -> same threshold for all labels
+        effective_thresholds = np.full(len(label_cols), float(best_thresh))
+    else:
+        print("Warning: best_thresh has unexpected type. Falling back to 0.3 for all labels.")
+        effective_thresholds = np.full(len(label_cols), 0.3)
+except NameError:
+    # best_thresh not defined -> default 0.3
+    print("Warning: best_thresh not defined. Falling back to default threshold 0.3.")
+    effective_thresholds = np.full(len(label_cols), 0.3)
 
-macro_f1 = f1_score(y_true, preds_all, average="macro", zero_division=0)
-acc = accuracy_score(y_true, preds_all)
-print("\nEnsemble on dev:")
-print(f"Macro-F1={macro_f1:.4f}, Acc={acc:.4f}")
-print("Best thresholds per label:", dict(zip(label_cols, best_thresh)))
+# --- Binarize ensemble probabilities for MULTI-LABEL metrics ---
+preds_ens_train = np.zeros_like(y_train)
+for j in range(len(label_cols)):
+    preds_ens_train[:, j] = (probs_ens_train[:, j] >= effective_thresholds[j]).astype(int)
+
+# --- Multi-label global metrics (same view as individual models) ---
+f1_ens = f1_score(y_train, preds_ens_train, average="macro", zero_division=0)
+acc_ens = accuracy_score(y_train, preds_ens_train)
+print(f"Ensemble (multi-label) TRAIN macro-F1: {f1_ens:.4f}, accuracy: {acc_ens:.4f}")
+
+# --- Multiclass view: use the SAME helper as individual models ---
+# You already defined this in an earlier cell:
+#   collapse_multilabel_to_multiclass(y_true_multi, logits, threshold_for_none=0.3)
+# It returns:
+#   y_true_mc, y_pred_mc  with classes 0..L where 0 = 'none', 1..L = labels
+
+num_harm = len(label_cols)       # e.g. 5
+num_classes = num_harm + 1       # 0 = none, 1..num_harm = harm classes
+class_ids = list(range(num_classes))
+class_names = ["none"] + label_cols  # axis labels for the 6x6
+
+y_true_mc_ens, y_pred_mc_ens = collapse_multilabel_to_multiclass(
+    y_true_multi=y_train,
+    logits=logits_ens_train,     # ensemble logits
+    threshold_for_none=0.3,      # same as per-model confusion matrices
+)
+
+f1_macro_mc_ens = f1_score(y_true_mc_ens, y_pred_mc_ens, average="macro", zero_division=0)
+acc_mc_ens = accuracy_score(y_true_mc_ens, y_pred_mc_ens)
+print(f"Ensemble (multiclass) TRAIN macro-F1: {f1_macro_mc_ens:.4f}, accuracy: {acc_mc_ens:.4f}")
+
+cm_ens = confusion_matrix(
+    y_true_mc_ens,
+    y_pred_mc_ens,
+    labels=class_ids,  # [0..num_harm]
+)
+
+print("Ensemble 6x6 confusion matrix (TRAIN):")
+print(cm_ens)
+
+fig = plot_confusion_matrix(
+    cm_ens,
+    classes=class_names,          # ["none", class1, ..., class5]
+    title="Ensemble",
+    normalize=True,
+)
+
+fig_filename = "st3_train_confusion_ensemble_all.png"
+fig_path = os.path.join(cm_dir, fig_filename)
+fig.savefig(fig_path, dpi=150)
+plt.close(fig)
+
+print("Saved 6x6 ensemble confusion figure:", fig_path)
 
 """### Get dev logits and apply ensemble
 
@@ -278,8 +525,26 @@ probs_ens_test = 1.0 / (1.0 + np.exp(-logits_ens_test))
 """Apple the tuned thresholds learend above."""
 
 preds_test = np.zeros_like(probs_ens_test, dtype=int)
+
+# Ensure best_thresh is an array if per-label thresholds are intended
+# If best_thresh is a float, it means the per-label tuning hasn't occurred yet.
+# As a temporary fix, we convert it to an array of repeated values.
+if isinstance(best_thresh, (float, int)):
+    # Assuming best_thresh was intended to be an array of NUM_LABELS, but was set as a single float
+    effective_thresholds = np.full(num_labels, best_thresh)
+elif isinstance(best_thresh, (list, np.ndarray)):
+    effective_thresholds = np.array(best_thresh)
+    if len(effective_thresholds) != num_labels:
+        # This would indicate an issue with the tuning process if it produced an array of wrong size
+        print(f"Warning: best_thresh has {len(effective_thresholds)} elements, but {num_labels} were expected. Using first element as global threshold.")
+        effective_thresholds = np.full(num_labels, effective_thresholds[0])
+else:
+    # Fallback to a default single threshold if best_thresh is neither a float/int nor an array/list
+    print("Warning: best_thresh is of unexpected type. Falling back to default threshold 0.3.")
+    effective_thresholds = np.full(num_labels, 0.3)
+
 for j in range(num_labels):
-    preds_test[:, j] = (probs_ens_test[:, j] >= best_thresh[j]).astype(int)
+    preds_test[:, j] = (probs_ens_test[:, j] >= effective_thresholds[j]).astype(int)
 
 print("preds_test shape:", preds_test.shape)
 
@@ -323,7 +588,7 @@ prefix_to_lang = {
     "sp": "spa",
     "de": "deu",
     "ar": "arb",
-    "zh": "zo",
+    "zh": "zho",
 }
 
 # Add a prefix column based on the first 2 letters of id
@@ -337,3 +602,111 @@ for prefix, lang_code in prefix_to_lang.items():
     out_path = os.path.join(out_root, f"pred_{lang_code}.csv")
     df_lang.to_csv(out_path, index=False)
     print(f"Saved {len(df_lang)} rows to {out_path}")
+
+"""### Ensemble train metrics + confusion matrices"""
+
+# === Ensemble on TRAIN ===
+import numpy as np
+import os
+from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
+
+print("\n=== Ensemble (TRAIN) performance ===")
+
+# --- Helper: multi-label (0/1 per column) -> single-class index (+ none) ---
+def multilabel_to_multiclass(y_binary, none_index):
+    """
+    Convert multi-label row [0/1,...] to a single class index.
+    - If no positive labels: return none_index
+    - If one or more positives: return index of the first positive (np.argmax)
+      (Assumes at most one 'true' label in the data, or we just pick one.)
+    """
+    y_binary = np.asarray(y_binary)
+    n_samples, n_labels = y_binary.shape
+    y_mc = np.full(n_samples, none_index, dtype=int)
+
+    for i in range(n_samples):
+        row = y_binary[i]
+        if row.sum() > 0:
+            y_mc[i] = np.argmax(row)
+    return y_mc
+
+# --- Ensemble logits on TRAIN ---
+# Make sure these keys match your model_dirs keys
+logits_x_train = train_logits_models["xlmr"]
+logits_t_train = train_logits_models["twitter"]
+logits_m_train = train_logits_models["mdeberta"]
+
+# Equal-weight ensemble on logits
+logits_ens_train = (logits_x_train + logits_t_train + logits_m_train) / 3.0
+probs_ens_train = sigmoid_np(logits_ens_train)
+
+# --- Determine thresholds (per-label or global) ---
+try:
+    # If best_thresh is array/list, use per-label thresholds
+    if isinstance(best_thresh, (list, np.ndarray)):
+        effective_thresholds = np.array(best_thresh)
+        if len(effective_thresholds) != len(label_cols):
+            print(
+                f"Warning: best_thresh has {len(effective_thresholds)} elements, "
+                f"but {len(label_cols)} were expected. Falling back to global threshold 0.3."
+            )
+            effective_thresholds = np.full(len(label_cols), 0.3)
+    elif isinstance(best_thresh, (float, int)):
+        # Single scalar -> same threshold for all labels
+        effective_thresholds = np.full(len(label_cols), float(best_thresh))
+    else:
+        print("Warning: best_thresh has unexpected type. Falling back to 0.3 for all labels.")
+        effective_thresholds = np.full(len(label_cols), 0.3)
+except NameError:
+    # best_thresh not defined -> default 0.3
+    print("Warning: best_thresh not defined. Falling back to default threshold 0.3.")
+    effective_thresholds = np.full(len(label_cols), 0.3)
+
+# --- Binarize ensemble probabilities ---
+preds_ens_train = np.zeros_like(y_train)
+for j in range(len(label_cols)):
+    preds_ens_train[:, j] = (probs_ens_train[:, j] >= effective_thresholds[j]).astype(int)
+
+# --- Global metrics ---
+f1_ens = f1_score(y_train, preds_ens_train, average="macro", zero_division=0)
+acc_ens = accuracy_score(y_train, preds_ens_train)
+print(f"Ensemble TRAIN macro-F1: {f1_ens:.4f}, accuracy: {acc_ens:.4f}")
+
+# --- 6x6 confusion matrix: 5 labels + 'none' ---
+num_labels = len(label_cols)
+none_index = num_labels  # 'none' is encoded as this index in the raw CM
+
+# Convert true & predicted multi-label to single-class indices
+y_train_mc = multilabel_to_multiclass(y_train, none_index=none_index)
+y_pred_mc  = multilabel_to_multiclass(preds_ens_train, none_index=none_index)
+
+# Raw confusion matrix with numeric labels 0..num_labels (last = none)
+cm_ens = confusion_matrix(
+    y_train_mc,
+    y_pred_mc,
+    labels=np.arange(num_labels + 1)  # 0..num_labels
+)
+
+print("Ensemble 6x6 confusion matrix (TRAIN) - raw:")
+print(cm_ens)
+
+# Reorder so that 'none' row/col comes first in the plot
+order = [none_index] + list(range(num_labels))  # e.g. [5,0,1,2,3,4]
+cm_ens_reordered = cm_ens[order][:, order]
+
+# Class names in the plotting order: 'none' first, then labels
+class_names_mc = ["none"] + label_cols
+
+fig = plot_confusion_matrix(
+    cm_ens_reordered,
+    classes=class_names_mc,
+    title="Ensemble Models (Train)",
+    normalize=True,
+)
+
+fig_filename = "st3_train_confusion_ensemble_all.png"
+fig_path = os.path.join(cm_dir, fig_filename)
+fig.savefig(fig_path, dpi=150)
+plt.close(fig)
+
+print("Saved 6x6 ensemble confusion figure:", fig_path)
