@@ -4,26 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-This repository contains the code and documentation for our submission to SemEval 2026 Task 9: "Detecting Multilingual, Multicultural and Multievent Online Polarization". This project was completed as the final requirement for the Natural Language Processing course at the University of Colorado Boulder.
-
-## **Table of Contents**
-
-*   [Introduction](#introduction)
-*   [Task Description](#task-description)
-*   [Getting Started](#getting-started)
-    *   [Prerequisites](#prerequisites)
-    *   [Installation](#installation)
-*   [Usage](#usage)
-    *   [Data](#data)
-    *   [Training](#training)
-    *   [Evaluation](#evaluation)
-*   [Repository Structure](#repository-structure)
-*   [Methodology](#methodology)
-*   [Results](#results)
-*   [Contributing](#contributing)
-*   [License](#license)
-*   [Acknowledgments](#acknowledgments)
-*   [References](#references)
+This repository contains the code and documentation for our submission to SemEval 2026 Task 9: "Detecting Multilingual, Multicultural and Multievent Online Polarization". This project was completed as the final requirement for the Natural Language Processing course at the University of Colorado Boulder. The work within this respository is the experimentation scripts that were originally created in Google Colab to leverage high-perfoermance GPUs.
 
 ## **Introduction**
 
@@ -39,89 +20,19 @@ SemEval 2026 Task 9 focuses on identifying online polarization. The task is brok
 
 This project will focus on each of the subtasks. The dataset provided for this task includes text in over 20 languages. Our models created will be trained using 5 languages that are still to be decided.
 
-## **Getting Started**
-
-These instructions will get you a copy of the project up and running on your local machine for development and testing purposes.
-
-### **Prerequisites**
-
-Before you begin, ensure you have the following installed:
-
-*   Python (3.8+)
-*   pip
-*   [Any other major dependencies like PyTorch, TensorFlow, etc.]
-
-### **Installation**
-
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/[your-username]/[your-repository-name].git
-    cd [your-repository-name]
-    ```
-
-2.  **Create and activate a virtual environment (recommended):**
-    ```bash
-    python -m venv venv
-    source venv/bin/activate
-    ```
-
-3.  **Install the required packages:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-## **Usage**
-
-This section explains how to use the code in this repository.
-
 ### **Data**
 
 The data for this task can be obtained from the [Official SemEval 2026 Task 9 website]([https://semeval.github.io/SemEval2026/](https://www.codabench.org/competitions/10522/)). Once downloaded, place the data in the `/data` directory.
 
-### **Training**
-
-To train a new model, run the following command:
-
-```bash
-python src/train.py --model [model_name] --data_path data/ --output_path models/
-```
-
-### **Evaluation**
-
-To evaluate a trained model, use the evaluation script
-
-```bash
-python src/evaluate.py --model_path models/[model_name] --test_data_path data/test.csv
-```
-
-## **Repository Structure**
-
-*   subtask1
-*   subtask2
-*   subtask3
-*   submissions
-*   .gitignore
-*   LICENSE
-*   README.md
-
 ## **Methodology**
 
-Our approach to this task involves [describe your methodology in a few paragraphs. For example, mention the architecture of your model(s), any pre-processing steps, and the overall workflow]. We experimented with several techniques, including [mention some of the techniques you tried].
+We took an experimental appraoch to the subtasks in this project. In the binary classification we tested model performance using different data augmentation techniques to see what lead to the best results. In the multi-class classification (subtask 3) the team created an ensemble of pre-trained models to see if the strengths of each model could be highlighted in the system and lead to better overall results.
 
-## **Results**
+### **Results**
 
-The performance of our final model on the validation set is as follows:
+From subtask 1: more data, more training leads to better results. Trying to be clever with data augmentations are hit or miss. From subtask 3: can't extract the best attributes from a pre-trained model doesn't work. Performance ultimately averages in ensemble models.
 
-| Subtask                      | Metric | Score |
-| ---------------------------- | ------ | ----- |
-| [e.g., Polarization Detection] | [e.g., F1] | [e.g., 0.85] |
-| ...                          | ...    | ...   |
-
-A more detailed analysis of our results can be found in our final project report.
-
-## **Contributing**
-
-As this is a university project, we are not actively seeking contributions. However, if you have suggestions or find any issues, please feel free to open an issue.
+A detailed analysis of our results can be found in our final project report.
 
 ## **License**
 
@@ -131,8 +42,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 *   We would like to thank our instructor, James Martin, and the teaching assistants for their guidance and support.
 *   We also thank the organizers of SemEval for creating this valuable shared task.
-
-## **References**
-
-*   [Link to the SemEval 2026 Task 9 paper, once available]
-*   [Any other papers or resources you used]
